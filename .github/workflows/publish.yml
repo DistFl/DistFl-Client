@@ -30,6 +30,7 @@ jobs:
     environment: pypi
     permissions:
       id-token: write    # Required for OIDC Trusted Publishing
+      contents: read
 
     steps:
       - name: Checkout repository
