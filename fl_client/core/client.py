@@ -1,13 +1,21 @@
 """Main FL Client — the orchestrator that ties all modules together.
 
-Implements the mandatory 3-step lifecycle:
-  cl = FLClient(server_url="...", room_id="...")
-  cl.initialize()        # fetch model_config, schema, weights from server
-  cl.validate("./data.csv")   # validate dataset against schema
-  cl.start()             # begin federated training
+Client-centric lifecycle API:
 
-Also supports room creation:
-  cl.create_room(model_config, data_schema, training_config)
+  Creator flow::
+
+    client = FLClient(server_url="ws://localhost:8080")
+    room = client.create_room(model=model, data_path="data.csv", target="label", ...)
+    client.wait_for_clients(min_clients=2)
+    client.start_training()
+
+  Joiner flow::
+
+    client = FLClient(server_url="ws://localhost:8080")
+    client.join(room_id, invite_code="abc123")
+    client.validate(data_path="data.csv")
+    client.ready()
+    client.start()
 """
 
 from __future__ import annotations
@@ -48,19 +56,20 @@ logger = logging.getLogger(__name__)
 class FLClient:
     """Production-grade Federated Learning Client.
 
-    Usage (join existing room)::
+    Creator flow::
 
-        cl = FLClient(server_url="ws://localhost:8080", room_id="R123")
-        cl.initialize()            # fetch room config from server
-        cl.validate("./data.csv")  # process dataset (CSV, DataLoader, or Tuple)
-        cl.start()                 # begin training
+        client = FLClient(server_url="ws://localhost:8080")
+        room = client.create_room(model=model, data_path="data.csv", target="label")
+        client.wait_for_clients(min_clients=2)
+        client.start_training()
 
-    Usage (create new room)::
+    Joiner flow::
 
-        cl = FLClient(server_url="ws://localhost:8080")
-        cl.create_room(model_config, data_schema, training_config)
-        cl.validate("./data.csv")
-        cl.start()
+        client = FLClient(server_url="ws://localhost:8080")
+        client.join(room_id, invite_code="abc123")
+        client.validate("data.csv")
+        client.ready()
+        client.start()
     """
 
     def __init__(
@@ -107,6 +116,7 @@ class FLClient:
         self._validated = False
         self._running = False
         self._training_in_progress = False
+        self._is_creator = False
 
         # Round limit (0 = unlimited)
         self._max_rounds = 0
@@ -347,25 +357,26 @@ class FLClient:
     def create_room(
         self,
         model: Any,
-        data_schema: Dict[str, Any],
+        data_path: str = "",
+        target: str = "label",
         training_config: Optional[Dict[str, Any]] = None,
         room_name: str = "fl-room",
         model_config: Optional[Dict[str, Any]] = None,
+        data_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create a new federated learning room.
 
-        The creator defines the model architecture, data schema, and training
-        parameters. Initial weights are generated locally and sent to the server.
-
         Args:
             model: The instantiated PyTorch (nn.Module) or Scikit-Learn model.
-            data_schema: Schema dict with 'columns' and 'target_column'.
+            data_path: Path to a CSV file to infer schema from.
+            target: Name of the target/label column.
             training_config: Training params (local_epochs, batch_size, learning_rate).
             room_name: Human-readable room name.
-            model_config: Optional metadata about the model architecture for the server UI.
+            model_config: Optional metadata about the model architecture.
+            data_schema: Explicit schema dict. If omitted, inferred from data_path.
 
         Returns:
-            The created room dict (includes room id and invite_code).
+            Dict with room metadata including ``id`` and ``invite_code``.
         """
         if training_config is None:
             training_config = {
@@ -374,12 +385,23 @@ class FLClient:
                 "learning_rate": 0.001,
             }
 
+        # Infer schema from CSV if data_path is provided and no explicit schema
+        if data_schema is None and data_path:
+            import pandas as pd
+            df = pd.read_csv(data_path, nrows=5)
+            columns = [c for c in df.columns if c != target]
+            data_schema = {
+                "columns": columns,
+                "target_column": target,
+            }
+            logger.info("Inferred schema from %s — %d features, target=%s", data_path, len(columns), target)
+        elif data_schema is None:
+            data_schema = {"columns": [], "target_column": target}
+
         # Build wrapper locally and generate initial weights
         logger.info("Wrapping model and extracting initial weights...")
         self._model = wrap_model(model)
-        
-        # Scikit-Learn models cannot generate weights before `partial_fit` is called with data.
-        # Thus, if using scikit-learn without initial training data, we provide empty initial weights.
+
         try:
             initial_weights = self._model.get_weights()
         except RuntimeError:
@@ -390,6 +412,7 @@ class FLClient:
         self._model_config = model_config or {"model_type": self._model.model_type}
         self._data_schema = data_schema
         self._training_config = training_config
+        self._is_creator = True
 
         # Apply to config
         self._config.label_column = data_schema.get("target_column", "label")
@@ -409,19 +432,28 @@ class FLClient:
         self._config.room_id = room.get("id", "")
         self._initialized = True
 
+        # Build a simple return dict
+        room_info = {
+            "id": room.get("id", ""),
+            "invite_code": room.get("invite_code", ""),
+            "name": room.get("name", room_name),
+            "state": room.get("state", "waiting"),
+        }
+
         logger.info(
             "✅ Room created — id=%s invite_code=%s",
-            room.get("id"),
-            room.get("invite_code"),
+            room_info["id"],
+            room_info["invite_code"],
         )
 
-        return result
+        return room_info
 
     async def _do_create_room(
         self, name, model_config, data_schema, training_config, initial_weights
     ) -> Dict[str, Any]:
         payload = {
             "name": name,
+            "creator_id": self._config.client_id,
             "model_config": model_config,
             "data_schema": data_schema,
             "training_config": training_config,
@@ -439,6 +471,124 @@ class FLClient:
             except httpx.HTTPStatusError as e:
                 error = e.response.json() if e.response.content else {}
                 raise RuntimeError(f"Create room failed: {error.get('error', str(e))}") from e
+            except httpx.RequestError as e:
+                raise RuntimeError(f"Cannot reach server: {e}") from e
+
+    def join(
+        self,
+        room_id: str,
+        invite_code: str = "",
+        model: Any = None,
+    ) -> None:
+        """Join an existing room.
+
+        Registers this client with the room and fetches room config.
+
+        Args:
+            room_id: The room to join.
+            invite_code: Invite code for the room.
+            model: The local model instance (PyTorch or Scikit-Learn).
+        """
+        self._config.room_id = room_id
+        if invite_code:
+            self._config.invite_code = invite_code
+        self._is_creator = False
+
+        # Initialize (fetches room config from server)
+        self.initialize(model=model)
+        logger.info("✅ Joined room %s", room_id)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # LOBBY — ready / wait_for_clients / start_training
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def ready(self, device_info: Optional[Dict[str, Any]] = None) -> None:
+        """Signal readiness to the server.
+
+        Call after validate(). Tells the server this client is prepared
+        to begin training.
+
+        Args:
+            device_info: Optional hardware info (gpu, ram_gb, etc.).
+        """
+        if not self._validated:
+            raise RuntimeError("Call validate() before ready()")
+
+        asyncio.run(self._do_ready(device_info))
+        logger.info("✅ Client marked as ready")
+
+    async def _do_ready(self, device_info: Optional[Dict[str, Any]]) -> None:
+        url = f"{self._config.server_http_url}/client_ready"
+        payload = {
+            "room_id": self._config.room_id,
+            "client_id": self._config.client_id,
+            "device_info": device_info or {},
+        }
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            try:
+                resp = await http.post(url, json=payload)
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise RuntimeError(f"Ready signal failed: {e.response.text}") from e
+            except httpx.RequestError as e:
+                raise RuntimeError(f"Cannot reach server: {e}") from e
+
+    def wait_for_clients(self, min_clients: int = 1, timeout: int = 300) -> None:
+        """Block until the room has at least ``min_clients`` participants.
+
+        Polls ``GET /room_status`` every 3 seconds.
+
+        Args:
+            min_clients: Minimum number of clients required.
+            timeout: Maximum seconds to wait before raising.
+
+        Raises:
+            RuntimeError: If room_id is not set.
+            TimeoutError: If timeout is exceeded.
+        """
+        if not self._config.room_id:
+            raise RuntimeError("room_id is required. Call create_room() first.")
+
+        logger.info("⏳ Waiting for %d client(s) (timeout=%ds)...", min_clients, timeout)
+        start = _time.time()
+
+        while True:
+            status = self.room_status()
+            num = status.get("num_clients", 0)
+            if num >= min_clients:
+                logger.info("✅ %d client(s) connected", num)
+                return
+            elapsed = _time.time() - start
+            if elapsed >= timeout:
+                raise TimeoutError(
+                    f"Timed out waiting for clients: {num}/{min_clients} after {int(elapsed)}s"
+                )
+            _time.sleep(3)
+
+    def start_training(self) -> None:
+        """Trigger training for all participants (creator only).
+
+        Sends ``POST /start_training`` to the server, which broadcasts
+        ``start_training`` + global model to all connected clients.
+
+        Raises:
+            RuntimeError: If server rejects the request.
+        """
+        asyncio.run(self._do_start_training())
+        logger.info("✅ Training started")
+
+    async def _do_start_training(self) -> None:
+        url = f"{self._config.server_http_url}/start_training"
+        payload = {
+            "room_id": self._config.room_id,
+            "client_id": self._config.client_id,
+        }
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            try:
+                resp = await http.post(url, json=payload)
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                raise RuntimeError(f"Start training failed: {e.response.text}") from e
             except httpx.RequestError as e:
                 raise RuntimeError(f"Cannot reach server: {e}") from e
 
@@ -505,7 +655,11 @@ class FLClient:
 
         if not hasattr(self, "_train_data") or self._train_data is None:
             raise RuntimeError("Data was never explicitly validated/loaded via validate().")
-            
+
+        assert self._state_manager is not None, (
+            "StateManager failed to initialize. Check db_path and permissions."
+        )
+
         self._state_manager.set_dataset_metadata(
             num_samples=self._dataset_metadata.get("num_samples", 0) if self._dataset_metadata else 0,
             label_distribution=self._dataset_metadata.get("label_distribution", {}) if self._dataset_metadata else {},
@@ -597,6 +751,8 @@ class FLClient:
 
         if msg_type in ("global_model", "start_round", "new_global_model", "sync"):
             await self._handle_global_model(message)
+        elif msg_type == "start_training":
+            await self._handle_start_training(message)
         elif msg_type == "room_init":
             await self._handle_room_init(message)
         elif msg_type == "update_result":
@@ -607,6 +763,19 @@ class FLClient:
             logger.warning("Unknown message type: %s", msg_type)
 
     # ── Message handlers ──────────────────────────────────────────────────
+
+    async def _handle_start_training(self, message: Dict[str, Any]) -> None:
+        """Handle start_training message — server signals that training has begun."""
+        round_number = message.get("round", 1)
+        weights_3d = message.get("weights")
+
+        logger.info("🚀 start_training received — round=%d", round_number)
+
+        # Treat as a global_model trigger to begin the first training round
+        await self._handle_global_model({
+            "round": round_number,
+            "weights": weights_3d,
+        })
 
     async def _handle_room_init(self, message: Dict[str, Any]) -> None:
         """Handle room_init message (sent on WS connect)."""

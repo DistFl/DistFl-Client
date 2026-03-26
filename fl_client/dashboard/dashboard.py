@@ -98,8 +98,10 @@ class MetricsDashboard:
 
     def stop(self) -> None:
         """Stop the dashboard server."""
-        if self._server:
-            self._server.shutdown()
+        server = self._server
+        if server is not None:
+            self._server = None
+            server.shutdown()
 
     def _generate_html(self) -> str:
         """Generate the self-contained dashboard HTML."""

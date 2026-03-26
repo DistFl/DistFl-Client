@@ -181,7 +181,7 @@ class PyTorchModelWrapper(FLModelWrapper):
             epoch_loss += loss.item() * batch_features.size(0)
             _, predicted = torch.max(outputs.data, 1)
             total += batch_labels.size(0)
-            correct += (predicted == batch_labels).sum().item()
+            correct += int(torch.sum(predicted == batch_labels).item())
 
         avg_loss = epoch_loss / total if total > 0 else 0.0
         accuracy = correct / total if total > 0 else 0.0
@@ -275,8 +275,8 @@ class SklearnModelWrapper(FLModelWrapper):
         device: Any
     ) -> Tuple[float, float, int]:
         """Execute a single scikit-learn training pass over the dataset."""
-        total = 0
-        correct = 0
+        total: int = 0
+        batch_results: List[Tuple[int, int]] = []  # (batch_correct, batch_size)
 
         # Note: Scikit-learn doesn't typically output a per-batch scalar loss from partial_fit.
         
@@ -294,8 +294,8 @@ class SklearnModelWrapper(FLModelWrapper):
                 
             try:
                 preds = self.model.predict(X)
-                accuracy = np.sum(preds == y) / total if total > 0 else 0.0
-            except:
+                accuracy = float(np.sum(preds == y)) / float(total) if total > 0 else 0.0
+            except Exception:
                 accuracy = 0.0
                 
             return 0.0, float(accuracy), total
@@ -310,14 +310,16 @@ class SklearnModelWrapper(FLModelWrapper):
             else:
                 self.model.partial_fit(X, y, classes=self.classes)
 
-            total += len(y)
+            batch_size: int = len(y)
+            total = total + batch_size
             try:
                 preds = self.model.predict(X)
-                correct += np.sum(preds == y)
-            except:
+                batch_results.append((int(np.sum(preds == y)), batch_size))
+            except Exception:
                 pass
 
-        accuracy = correct / total if total > 0 else 0.0
+        correct: int = sum(r[0] for r in batch_results)
+        accuracy: float = float(correct) / float(total) if total > 0 else 0.0
         return 0.0, accuracy, total
 
     def _to_numpy(self, arr: Any) -> np.ndarray:
