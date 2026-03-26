@@ -1,0 +1,50 @@
+name: Test & Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run pytest
+        run: python -m pytest tests/ -v
+
+  publish:
+    name: Build & Publish to PyPI
+    needs: test          # Only publish if tests pass
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write    # Required for OIDC Trusted Publishing
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tool
+        run: pip install build
+
+      - name: Build wheel and sdist
+        run: python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

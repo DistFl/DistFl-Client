@@ -1,0 +1,9 @@
+# ── Include pre-built frontend assets ──
+recursive-include fl_client/web/static *
+
+# ── Exclude dev-only files from sdist ──
+prune tests
+prune fl_client/web/ui
+prune fl_client/dashboard
+exclude example_config.yaml
+exclude example_usage.py

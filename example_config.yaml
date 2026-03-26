@@ -1,0 +1,10 @@
+# Example FL client configuration
+server_url: "ws://localhost:8080"
+room_id: "R123"
+data_path: "./data.csv"
+batch_size: 32
+local_epochs: 2
+learning_rate: 0.001
+db_path: "fl_client_state.db"
+label_column: "label"
+log_level: "INFO"
