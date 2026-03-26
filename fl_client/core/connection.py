@@ -49,6 +49,7 @@ class ConnectionManager:
         client_id: str,
         base_delay: float = 1.0,
         max_delay: float = 60.0,
+        max_retries: int = 0,
         heartbeat_interval: float = 30.0,
     ) -> None:
         self._server_url = server_url.rstrip("/")
@@ -56,6 +57,7 @@ class ConnectionManager:
         self._client_id = client_id
         self._base_delay = base_delay
         self._max_delay = max_delay
+        self._max_retries = max_retries
         self._heartbeat_interval = heartbeat_interval
 
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -133,6 +135,11 @@ class ConnectionManager:
         On reconnect, the server automatically sends a sync payload.
         """
         while self._should_run:
+            if self._max_retries > 0 and self._reconnect_attempt >= self._max_retries:
+                logger.error("Max reconnect retries (%d) reached. Aborting connection.", self._max_retries)
+                self._should_run = False
+                raise ConnectionError("Max reconnect retries reached")
+
             delay = min(
                 self._base_delay * (2 ** self._reconnect_attempt),
                 self._max_delay,

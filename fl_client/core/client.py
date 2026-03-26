@@ -711,6 +711,7 @@ class FLClient:
             client_id=self._config.client_id,
             base_delay=self._config.reconnect_base_delay,
             max_delay=self._config.reconnect_max_delay,
+            max_retries=self._config.reconnect_max_retries,
             heartbeat_interval=self._config.heartbeat_interval,
         )
         await self._connection.connect()

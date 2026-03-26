@@ -28,6 +28,7 @@ class FLConfig:
         db_path: Path to the SQLite state database.
         reconnect_max_delay: Maximum reconnect backoff in seconds.
         reconnect_base_delay: Initial reconnect delay in seconds.
+        reconnect_max_retries: Maximum number of consecutive reconnect attempts (0 = unlimited).
         heartbeat_interval: WebSocket ping interval in seconds.
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
         label_column: Name of the label/target column in the CSV.
@@ -50,6 +51,7 @@ class FLConfig:
     db_path: str = "fl_client_state.db"
     reconnect_max_delay: float = 60.0
     reconnect_base_delay: float = 1.0
+    reconnect_max_retries: int = 0
     heartbeat_interval: float = 30.0
     log_level: str = "INFO"
     label_column: str = "label"
@@ -95,6 +97,7 @@ class FLConfig:
             "local_epochs": os.getenv("FL_LOCAL_EPOCHS"),
             "learning_rate": os.getenv("FL_LEARNING_RATE"),
             "db_path": os.getenv("FL_DB_PATH"),
+            "reconnect_max_retries": os.getenv("FL_RECONNECT_MAX_RETRIES"),
             "log_level": os.getenv("FL_LOG_LEVEL"),
             "label_column": os.getenv("FL_LABEL_COLUMN"),
             "schema": os.getenv("FL_SCHEMA"),
@@ -108,6 +111,7 @@ class FLConfig:
             "learning_rate": float,
             "reconnect_max_delay": float,
             "reconnect_base_delay": float,
+            "reconnect_max_retries": int,
             "heartbeat_interval": float,
             "dashboard_port": int,
         }

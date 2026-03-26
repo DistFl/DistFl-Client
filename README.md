@@ -72,7 +72,11 @@ pip install -e ".[dev]"
 
 ### 1. Room Creator
 
-The creator initializes the model, creates a room, waits for participants, and starts training:
+The creator relies on the `FLClient` to initialize the global model architecture, create a new room on the server, and wait for other participants to join before starting.
+
+> [!NOTE]
+> **Why `partial_fit`?**  
+> Federated Learning requires all clients to share the exact same weight matrix architecture. For Scikit-Learn models like `SGDClassifier`, the shape of the weights (`coef_` and `intercept_`) isn't initialized until it sees training data. We run a single dummy `partial_fit` on the creator side to establish this shape before sending it to the server.
 
 ```python
 from sklearn.linear_model import SGDClassifier
@@ -109,7 +113,11 @@ client.start_training()
 
 ### 2. Room Joiner
 
-Each participant joins an existing room, validates their local dataset, and trains:
+Each participant joins an existing room, validates their local dataset, and starts training. This follows the **3-Step Lifecycle**:
+
+1. **`initialize()`** — Connects to the server, fetches the room's data schema and model configuration, and injects the latest global model weights into your local model.
+2. **`validate()`** — Checks your local dataset (`data.csv`) against the room's expected schema (e.g., ensuring it has the correct target column and feature count) and performs a dummy forward pass to catch shape errors early.
+3. **`start()`** — Signals readiness to the server and blocks while entering the federated training loop.
 
 ```python
 from sklearn.linear_model import SGDClassifier
@@ -156,6 +164,12 @@ room = client.create_room(
 ```
 
 ### 4. Prediction After Training
+
+Because clients can disconnect, crash, or experience network drops, the DistFL SDK maintains a **local SQLite State Database**. 
+
+> [!TIP]
+> **Why connect to the DB?**  
+> The server does not hold your data. Your final, fully-trained aggregated model weights are saved to your local `fl_client_state.db` at the end of training. By loading the state for your specific `client_id` (e.g. `worker-1`), you can extract these weights and run predictions *locally* without ever needing to communicate with the server again.
 
 ```python
 from fl_client.storage.db import StateDB

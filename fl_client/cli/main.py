@@ -30,6 +30,7 @@ def main() -> None:
     run_parser.add_argument("--room-id", help="Room ID to join")
     run_parser.add_argument("--data", "-d", help="Path to CSV dataset")
     run_parser.add_argument("--client-id", help="Client ID (auto-generated if omitted)")
+    run_parser.add_argument("--reconnect-max-retries", type=int, default=0, help="Max reconnect retries (0=unlimited)")
     run_parser.add_argument("--log-level", default="INFO", help="Logging level")
     run_parser.add_argument("--dashboard-port", type=int, default=5050, help="Dashboard port (0=disabled)")
 
@@ -101,6 +102,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         config.data_path = args.data
     if args.client_id:
         config.client_id = args.client_id
+    if hasattr(args, "reconnect_max_retries") and args.reconnect_max_retries is not None:
+        config.reconnect_max_retries = args.reconnect_max_retries
     config.log_level = args.log_level
     config.dashboard_port = args.dashboard_port
 
