@@ -275,36 +275,49 @@ class SklearnModelWrapper(FLModelWrapper):
         device: Any
     ) -> Tuple[float, float, int]:
         """Execute a single scikit-learn training pass over the dataset."""
+        import numpy as np
+        from sklearn.metrics import log_loss, mean_squared_error
+
         total: int = 0
         batch_results: List[Tuple[int, int]] = []  # (batch_correct, batch_size)
 
-        # Note: Scikit-learn doesn't typically output a per-batch scalar loss from partial_fit.
-        
-        # If the input is exactly a single unbatched (X, y) Numpy tuple 
+        # Collect all data first to compute loss at the end
+        all_X = []
+        all_y = []
+
+        # If the input is exactly a single unbatched (X, y) Numpy tuple
         if isinstance(dataloader, tuple) and len(dataloader) == 2:
             X = self._to_numpy(dataloader[0])
             y = self._to_numpy(dataloader[1])
-            
+
             total = len(y)
-            
+            all_X.append(X)
+            all_y.append(y)
+
             if hasattr(self.model, "classes_") or self.classes is None:
                 self.model.partial_fit(X, y)
             else:
                 self.model.partial_fit(X, y, classes=self.classes)
-                
+
+            # Compute loss after training
+            loss = self._compute_loss_sklearn(X, y)
+
             try:
                 preds = self.model.predict(X)
                 accuracy = float(np.sum(preds == y)) / float(total) if total > 0 else 0.0
             except Exception:
                 accuracy = 0.0
-                
-            return 0.0, float(accuracy), total
+
+            return loss, float(accuracy), total
 
         # If it happens to be an iterable dataloader of smaller batches
         for batch_features, batch_labels in dataloader:
             X = self._to_numpy(batch_features)
             y = self._to_numpy(batch_labels)
-            
+
+            all_X.append(X)
+            all_y.append(y)
+
             if hasattr(self.model, "classes_") or self.classes is None:
                 self.model.partial_fit(X, y)
             else:
@@ -318,9 +331,46 @@ class SklearnModelWrapper(FLModelWrapper):
             except Exception:
                 pass
 
+        # Compute loss on all data combined
+        if all_X and all_y:
+            X_full = np.vstack(all_X)
+            y_full = np.concatenate(all_y)
+            loss = self._compute_loss_sklearn(X_full, y_full)
+        else:
+            loss = 0.0
+
         correct: int = sum(r[0] for r in batch_results)
         accuracy: float = float(correct) / float(total) if total > 0 else 0.0
-        return 0.0, accuracy, total
+        return loss, accuracy, total
+
+    def _compute_loss_sklearn(self, X: np.ndarray, y: np.ndarray) -> float:
+        """Compute loss using sklearn metrics: log_loss for classifiers, MSE for regressors."""
+        import numpy as np
+        from sklearn.metrics import log_loss, mean_squared_error
+
+        try:
+            # Classification: use log_loss if predict_proba available
+            if hasattr(self.model, "predict_proba"):
+                y_pred_proba = self.model.predict_proba(X)
+                classes = self.classes if self.classes else (getattr(self.model, "classes_", None))
+                if classes is None:
+                    classes = list(np.unique(y))
+
+                # Handle binary vs multi-class
+                if len(classes) == 2:
+                    # For binary, use positive class probability
+                    y_pred_proba = y_pred_proba[:, 1]
+                return float(log_loss(y, y_pred_proba, labels=classes))
+
+            # Regression: use MSE if predict available
+            elif hasattr(self.model, "predict"):
+                y_pred = self.model.predict(X)
+                return float(mean_squared_error(y, y_pred))
+
+        except Exception as e:
+            logger.debug("Could not compute sklearn loss: %s", e)
+
+        return 0.0
 
     def _to_numpy(self, arr: Any) -> np.ndarray:
         if HAS_TORCH and isinstance(arr, torch.Tensor):

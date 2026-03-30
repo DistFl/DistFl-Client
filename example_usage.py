@@ -26,7 +26,7 @@ def create_room_sklearn():
     y = df["label"].values[:10].astype(np.int64)
     model.partial_fit(X, y, classes=[0, 1])
 
-    client = FLClient(server_url="ws://localhost:8080")
+    client = FLClient(server_url="wss://fedlearn-server.onrender.com")
 
     # 1. Create the room (infers schema from data_path)
     room = client.create_room(
@@ -74,7 +74,7 @@ def create_room_pytorch():
         def forward(self, x):
             return self.net(x)
 
-    client = FLClient(server_url="ws://localhost:8080")
+    client = FLClient(server_url="wss://fedlearn-server.onrender.com")
 
     room = client.create_room(
         model=PhishingMLP(),
@@ -112,7 +112,7 @@ def join_and_train(room_id: str):
     y = df["label"].values[:10].astype(np.int64)
     model.partial_fit(X, y, classes=[0, 1])
 
-    client = FLClient(server_url="ws://localhost:8080")
+    client = FLClient(server_url="wss://fedlearn-server.onrender.com")
 
     # 1. Join the room
     client.join(room_id, invite_code="abc123", model=model)

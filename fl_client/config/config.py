@@ -40,7 +40,7 @@ class FLConfig:
         dashboard_port: Port for the metrics dashboard (0 = disabled).
     """
 
-    server_url: str = "ws://localhost:8080"
+    server_url: str = "wss://fedlearn-server.onrender.com"
     room_id: str = ""
     client_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     invite_code: str = ""

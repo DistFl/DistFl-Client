@@ -37,7 +37,7 @@ def main() -> None:
     # ── create-room ───────────────────────────────────────────────────────
     create_parser = subparsers.add_parser("create-room", help="Create a new FL room")
     create_parser.add_argument("--config", "-c", help="Path to room YAML config file")
-    create_parser.add_argument("--server-url", default="ws://localhost:8080", help="Server URL")
+    create_parser.add_argument("--server-url", default="wss://fedlearn-server.onrender.com", help="Server URL")
     create_parser.add_argument("--room-name", default="fl-room", help="Room name")
     create_parser.add_argument("--model-type", default="mlp", help="Model type (mlp, cnn, lstm)")
     create_parser.add_argument("--input-size", type=int, help="Model input size")
@@ -50,7 +50,7 @@ def main() -> None:
     join_parser = subparsers.add_parser("join-room", help="Join room and start training")
     join_parser.add_argument("room_id", help="Room ID to join")
     join_parser.add_argument("--data", "-d", required=True, help="Path to CSV dataset")
-    join_parser.add_argument("--server-url", default="ws://localhost:8080", help="Server URL")
+    join_parser.add_argument("--server-url", default="wss://fedlearn-server.onrender.com", help="Server URL")
     join_parser.add_argument("--client-id", help="Client ID (auto-generated if omitted)")
     join_parser.add_argument("--log-level", default="INFO", help="Logging level")
     join_parser.add_argument("--dashboard-port", type=int, default=5050, help="Dashboard port (0=disabled)")

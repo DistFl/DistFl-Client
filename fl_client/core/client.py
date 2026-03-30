@@ -4,14 +4,14 @@ Client-centric lifecycle API:
 
   Creator flow::
 
-    client = FLClient(server_url="ws://localhost:8080")
+    client = FLClient(server_url="wss://fedlearn-server.onrender.com")
     room = client.create_room(model=model, data_path="data.csv", target="label", ...)
     client.wait_for_clients(min_clients=2)
     client.start_training()
 
   Joiner flow::
 
-    client = FLClient(server_url="ws://localhost:8080")
+    client = FLClient(server_url="wss://fedlearn-server.onrender.com")
     client.join(room_id, invite_code="abc123")
     client.validate(data_path="data.csv")
     client.ready()
@@ -58,14 +58,14 @@ class FLClient:
 
     Creator flow::
 
-        client = FLClient(server_url="ws://localhost:8080")
+        client = FLClient(server_url="wss://fedlearn-server.onrender.com")
         room = client.create_room(model=model, data_path="data.csv", target="label")
         client.wait_for_clients(min_clients=2)
         client.start_training()
 
     Joiner flow::
 
-        client = FLClient(server_url="ws://localhost:8080")
+        client = FLClient(server_url="wss://fedlearn-server.onrender.com")
         client.join(room_id, invite_code="abc123")
         client.validate("data.csv")
         client.ready()
@@ -74,7 +74,7 @@ class FLClient:
 
     def __init__(
         self,
-        server_url: str = "ws://localhost:8080",
+        server_url: str = "wss://fedlearn-server.onrender.com",
         room_id: str = "",
         invite_code: str = "",
         client_id: Optional[str] = None,
@@ -328,7 +328,7 @@ class FLClient:
 
         Example::
 
-            cl = FLClient(server_url="ws://localhost:8080", room_id="R123")
+            cl = FLClient(server_url="wss://fedlearn-server.onrender.com", room_id="R123")
             cl.initialize()
             status = cl.room_status()
             print(f"Members in room: {status['num_clients']}")
@@ -391,7 +391,7 @@ class FLClient:
             df = pd.read_csv(data_path, nrows=5)
             columns = [c for c in df.columns if c != target]
             data_schema = {
-                "columns": columns,
+                "columns": [{"name": c, "type": "float"} for c in columns],
                 "target_column": target,
             }
             logger.info("Inferred schema from %s — %d features, target=%s", data_path, len(columns), target)
@@ -424,7 +424,7 @@ class FLClient:
         self._config.model_config = model_config
 
         result = asyncio.run(
-            self._do_create_room(room_name, model_config, data_schema, training_config, initial_weights)
+            self._do_create_room(room_name, self._model_config, self._data_schema, self._training_config, initial_weights)
         )
 
         # Set room_id from server response
@@ -469,8 +469,8 @@ class FLClient:
                 resp.raise_for_status()
                 return resp.json()
             except httpx.HTTPStatusError as e:
-                error = e.response.json() if e.response.content else {}
-                raise RuntimeError(f"Create room failed: {error.get('error', str(e))}") from e
+                error_body = e.response.text if hasattr(e.response, "text") else "No response body"
+                raise RuntimeError(f"Create room failed: {error_body}") from e
             except httpx.RequestError as e:
                 raise RuntimeError(f"Cannot reach server: {e}") from e
 
@@ -518,6 +518,10 @@ class FLClient:
         logger.info("✅ Client marked as ready")
 
     async def _do_ready(self, device_info: Optional[Dict[str, Any]]) -> None:
+        if not getattr(self, "_has_joined", False):
+            await self._join_room()
+            self._has_joined = True
+
         url = f"{self._config.server_http_url}/client_ready"
         payload = {
             "room_id": self._config.room_id,
@@ -621,7 +625,9 @@ class FLClient:
 
         try:
             await self._setup_components()
-            await self._join_room()
+            if not getattr(self, "_has_joined", False):
+                await self._join_room()
+                self._has_joined = True
             await self._connect_websocket()
 
             # Start dashboard
@@ -679,14 +685,14 @@ class FLClient:
 
     async def _join_room(self) -> None:
         """Join the FL room via HTTP POST /join_room."""
-        assert self._state_manager is not None
+        meta = getattr(self, "_dataset_metadata", {})
 
         url = f"{self._config.server_http_url}/join_room"
         payload = {
             "room_id": self._config.room_id,
             "client_id": self._config.client_id,
-            "num_samples": self._state_manager.num_samples,
-            "label_distribution": self._state_manager.label_distribution or {},
+            "num_samples": meta.get("num_samples", 0),
+            "label_distribution": meta.get("label_distribution", {}),
         }
 
         logger.info("Joining room via %s", url)
