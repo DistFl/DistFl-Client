@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from sklearn.metrics import log_loss, mean_squared_error
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -178,8 +179,10 @@ class PyTorchAdapter(BaseModelAdapter):
 class SklearnAdapter(BaseModelAdapter):
     """Adapter for Scikit-Learn `BaseEstimator` classes."""
 
-    def __init__(self, model: Any):
+    def __init__(self, model: Any, classes: Optional[list] = None):
         self.model = model
+        self.classes = classes
+        self._fitted = False
 
     def train(
         self,
@@ -189,37 +192,108 @@ class SklearnAdapter(BaseModelAdapter):
         criterion: Optional[Any] = None,
     ) -> TrainingResult:
         """Trains the estimator utilizing either .fit() or .partial_fit()."""
+        import numpy as np
+
         start_time = time.time()
         X, y = train_data
-        
+
         num_samples = len(X) if hasattr(X, "__len__") else 0
-        logger.info("Training Sklearn model on %d samples.", num_samples)
+        logger.info("Training Sklearn model on %d samples for %d epochs.", num_samples, local_epochs)
+
+        # Infer classes if not provided (for classification)
+        if self.classes is None and hasattr(self.model, "classes_"):
+            self.classes = list(self.model.classes_)
+        elif self.classes is None and len(y) > 0:
+            # Auto-detect unique classes from training labels
+            self.classes = list(np.unique(y))
+
+        # Track losses per epoch for proper loss reporting
+        epoch_losses = []
+        final_score = 0.0
 
         # Iterative models natively support partial_fit per epoch
         if hasattr(self.model, "partial_fit") and local_epochs > 1:
             for epoch in range(local_epochs):
-                self.model.partial_fit(X, y)
+                epoch_start = time.time()
+
+                # First partial_fit call needs classes parameter
+                if not self._fitted:
+                    self.model.partial_fit(X, y, classes=self.classes)
+                    self._fitted = True
+                else:
+                    self.model.partial_fit(X, y)
+
+                # Compute loss after this epoch
+                loss = self._compute_loss(X, y)
+                epoch_losses.append(loss)
+
+                # Compute score for monitoring
+                if hasattr(self.model, "score"):
+                    try:
+                        final_score = float(self.model.score(X, y))
+                    except Exception:
+                        pass
+
+                epoch_time = time.time() - epoch_start
+                logger.info(
+                    "Sklearn Epoch %d/%d — loss=%.4f score=%.4f time=%.3fs",
+                    epoch + 1, local_epochs, loss, final_score, epoch_time
+                )
         else:
+            # Single-shot fit for non-iterative models
             self.model.fit(X, y)
+            self._fitted = True
+            loss = self._compute_loss(X, y)
+            epoch_losses.append(loss)
 
-        score = 0.0
-        if hasattr(self.model, "score"):
-            try:
-                score = float(self.model.score(X, y))
-            except Exception as e:
-                logger.debug("Failed to compute sklearn score metric: %s", e)
+            if hasattr(self.model, "score"):
+                try:
+                    final_score = float(self.model.score(X, y))
+                except Exception as e:
+                    logger.debug("Failed to compute sklearn score metric: %s", e)
 
-        metrics = {"score": score}
+            logger.info(
+                "Sklearn Fit complete — loss=%.4f score=%.4f samples=%d",
+                loss, final_score, num_samples
+            )
+
+        # Use average of epoch losses for final loss
+        final_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0.0
+
+        metrics = {"score": final_score, "epochs_completed": local_epochs}
         training_time = time.time() - start_time
-        
-        # In sklearn, loss computation varies widely, often proxying zero when untracked
+
         return TrainingResult(
             model_state=self.get_weights(),
-            loss=0.0,
+            loss=float(final_loss),
             metrics=metrics,
             training_time=float(training_time),
             num_samples=int(num_samples),
         )
+
+    def _compute_loss(self, X: Any, y: Any) -> float:
+        """Compute loss based on model type: log_loss for classifiers, MSE for regressors."""
+        import numpy as np
+
+        try:
+            # Classification: use log_loss if predict_proba available
+            if hasattr(self.model, "predict_proba"):
+                y_pred_proba = self.model.predict_proba(X)
+                # Handle binary vs multi-class
+                if len(self.classes) == 2:
+                    # For binary, use positive class probability
+                    y_pred_proba = y_pred_proba[:, 1]
+                return float(log_loss(y, y_pred_proba, labels=self.classes))
+
+            # Regression: use MSE if predict available
+            elif hasattr(self.model, "predict"):
+                y_pred = self.model.predict(X)
+                return float(mean_squared_error(y, y_pred))
+
+        except Exception as e:
+            logger.debug("Could not compute loss: %s", e)
+
+        return 0.0
 
     def get_weights(self) -> Any:
         """Export exposed coefficient and intercept vectors."""
@@ -333,7 +407,11 @@ class Trainer:
         model_module = type(model).__module__
         if model_module.startswith("sklearn") or hasattr(model, "fit"):
             logger.debug("Auto-selected SklearnAdapter for model.")
-            return SklearnAdapter(model)
+            # Try to infer classes for classification models
+            classes = getattr(model, "classes_", None)
+            if classes is None and hasattr(model, "classes"):
+                classes = model.classes
+            return SklearnAdapter(model, classes=classes)
 
         # Check underlying: Native PyTorch objects
         if HAS_TORCH and isinstance(model, nn.Module):

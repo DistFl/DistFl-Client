@@ -31,7 +31,7 @@ from pydantic import BaseModel
 import torch.nn as nn
 
 from fl_client.core.client import FLClient
-from fl_client.training.dataset import DatasetValidationError, validate_dataset_schema
+from fl_client.training.dataset import DatasetValidationError
 
 logger = logging.getLogger(__name__)
 

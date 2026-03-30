@@ -127,7 +127,7 @@ h1 {{ font-size:22px; background:linear-gradient(135deg,#6366f1,#a78bfa);
 .metric-label {{ font-size:11px; color:#9ca3af; margin-top:4px; text-transform:uppercase; }}
 canvas {{ max-height:220px; }}
 #logs {{ background:#1a1d2e; border-radius:8px; padding:12px; max-height:200px; overflow-y:auto;
-         font[:12px; font-family:'SF Mono',monospace; line-height:1.6; }}
+         font-size:12px; font-family:'SF Mono',monospace; line-height:1.6; }}
 .log {{ padding:2px 0; color:#60a5fa; border-bottom:1px solid rgba(45,50,80,0.5); }}
 .full {{ grid-column:1/-1; }}
 </style>
@@ -185,9 +185,11 @@ const timeChart = makeChart('timeChart','#22c55e');
 const dwChart = makeChart('dwChart','#f59e0b');
 const samplesChart = makeChart('samplesChart','#6366f1');
 
+let lastProcessedRound = -1;
+
 async function refresh() {{
   try {{
-    const r = await fetch('/api/metrics');
+    const r = await fetch('/api/metrics?_=' + Date.now(), {{ cache: 'no-store' }});
     const d = await r.json();
     const rounds = d.rounds || [];
 
@@ -200,32 +202,45 @@ async function refresh() {{
       document.getElementById('m-dw').textContent = (last.delta_w||0).toFixed(4);
     }}
 
-    const labels = rounds.map(r => r.round);
-    lossChart.data.labels = labels;
-    lossChart.data.datasets[0].data = rounds.map(r => r.loss);
-    lossChart.update();
-
-    timeChart.data.labels = labels;
-    timeChart.data.datasets[0].data = rounds.map(r => r.training_time);
-    timeChart.update();
-
-    dwChart.data.labels = labels;
-    dwChart.data.datasets[0].data = rounds.map(r => r.delta_w || 0);
-    dwChart.update();
-
-    samplesChart.data.labels = labels;
-    samplesChart.data.datasets[0].data = rounds.map(r => r.num_samples);
-    samplesChart.update();
-
-    const logs = document.getElementById('logs');
-    logs.innerHTML = rounds.map(r =>
-      `<div class="log">Round ${{r.round}}: loss=${{(r.loss||0).toFixed(4)}} time=${{(r.training_time||0).toFixed(2)}}s ΔW=${{(r.delta_w||0).toFixed(4)}}</div>`
-    ).join('');
-    logs.scrollTop = logs.scrollHeight;
-  }} catch(e) {{}}
+    const newRounds = rounds.filter(r => r.round > lastProcessedRound);
+    if (newRounds.length > 0) {{
+      const logs = document.getElementById('logs');
+      
+      newRounds.forEach(r => {{
+        lossChart.data.labels.push(r.round);
+        lossChart.data.datasets[0].data.push(r.loss);
+        
+        timeChart.data.labels.push(r.round);
+        timeChart.data.datasets[0].data.push(r.training_time);
+        
+        dwChart.data.labels.push(r.round);
+        dwChart.data.datasets[0].data.push(r.delta_w || 0);
+        
+        samplesChart.data.labels.push(r.round);
+        samplesChart.data.datasets[0].data.push(r.num_samples);
+        
+        const logEntry = document.createElement('div');
+        logEntry.className = 'log';
+        logEntry.innerHTML = `Round ${{r.round}}: loss=${{(r.loss||0).toFixed(4)}} time=${{(r.training_time||0).toFixed(2)}}s ΔW=${{(r.delta_w||0).toFixed(4)}}`;
+        logs.appendChild(logEntry);
+        
+        if (logs.children.length > 200) {{
+          logs.removeChild(logs.firstChild);
+        }}
+      }});
+      
+      lossChart.update();
+      timeChart.update();
+      dwChart.update();
+      samplesChart.update();
+      
+      logs.scrollTop = logs.scrollHeight;
+      lastProcessedRound = newRounds[newRounds.length - 1].round;
+    }}
+  }} catch(e) {{ console.error('Dashboard refresh error:', e); }}
 }}
 
-setInterval(refresh, 3000);
+setInterval(refresh, 500);
 refresh();
 </script>
 </body>

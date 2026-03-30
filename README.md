@@ -93,7 +93,7 @@ y = df["label"].values[:10].astype(np.int64)
 model.partial_fit(X, y, classes=[0, 1])
 
 # Create room
-client = FLClient(server_url="ws://localhost:8080")
+client = FLClient(server_url="wss://fedlearn-server.onrender.com")
 room = client.create_room(
     model=model,
     data_path="./data.csv",
@@ -127,7 +127,7 @@ model = SGDClassifier(loss="log_loss", penalty="l2", max_iter=1,
                       learning_rate="constant", eta0=0.01)
 # ... partial_fit to initialize shape (same architecture as creator)
 
-client = FLClient(server_url="ws://localhost:8080")
+client = FLClient(server_url="wss://fedlearn-server.onrender.com")
 client.join(room_id, invite_code="abc123", model=model)
 client.validate("./data.csv")
 client.ready()
@@ -153,7 +153,7 @@ class PhishingMLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-client = FLClient(server_url="ws://localhost:8080")
+client = FLClient(server_url="wss://fedlearn-server.onrender.com")
 room = client.create_room(
     model=PhishingMLP(),
     data_path="./data.csv",
@@ -195,10 +195,10 @@ print(f"✅ Accuracy: {accuracy * 100:.2f}%")
 distfl run --config config.yaml
 
 # Create a room
-distfl create-room --server-url ws://localhost:8080 --room-name "My Room"
+distfl create-room --server-url wss://fedlearn-server.onrender.com --room-name "My Room"
 
 # Join a room and train
-distfl join-room ROOM_ID --data ./data.csv --server-url ws://localhost:8080
+distfl join-room ROOM_ID --data ./data.csv --server-url wss://fedlearn-server.onrender.com
 
 # Launch the real-time web dashboard
 distfl ui --port 5050
@@ -218,7 +218,7 @@ All options can be set via **YAML file**, **CLI flags**, or **environment variab
 
 ```yaml
 # Server connection
-server_url: "ws://localhost:8080"
+server_url: "wss://fedlearn-server.onrender.com"
 room_id: ""                          # Leave empty to create a new room
 client_id: ""                        # Auto-generated if omitted
 
