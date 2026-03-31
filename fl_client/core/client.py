@@ -621,7 +621,10 @@ class FLClient:
         if threading.current_thread() is threading.main_thread():
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, lambda: asyncio.create_task(self._shutdown()))
+                try:
+                    loop.add_signal_handler(sig, lambda: asyncio.create_task(self._shutdown()))
+                except NotImplementedError:
+                    pass # Windows/Proactor loops do not support add_signal_handler
 
         try:
             await self._setup_components()
@@ -635,9 +638,13 @@ class FLClient:
 
             await self._event_loop()
         except Exception as e:
-            logger.error("Fatal error: %s", e, exc_info=True)
+            logger.error("Fatal error in _run_async: %s", e, exc_info=True)
+            raise  # Re-raise to let caller handle it
         finally:
-            await self._cleanup()
+            try:
+                await self._cleanup()
+            except Exception as cleanup_err:
+                logger.warning("Cleanup error (ignored): %s", cleanup_err)
 
     async def _shutdown(self) -> None:
         logger.info("Shutting down...")
@@ -711,6 +718,8 @@ class FLClient:
 
     async def _connect_websocket(self) -> None:
         """Establish WebSocket connection."""
+        logger.info("Setting up WebSocket connection to room %s as client %s", 
+                    self._config.room_id, self._config.client_id)
         self._connection = ConnectionManager(
             server_url=self._config.server_url,
             room_id=self._config.room_id,
@@ -720,7 +729,12 @@ class FLClient:
             max_retries=self._config.reconnect_max_retries,
             heartbeat_interval=self._config.heartbeat_interval,
         )
-        await self._connection.connect()
+        try:
+            await self._connection.connect()
+        except Exception as e:
+            logger.error("Failed to connect to WebSocket server at %s: %s", 
+                        self._connection.ws_url, e)
+            raise RuntimeError(f"WebSocket connection failed: {e}") from e
 
     async def _event_loop(self) -> None:
         """Main message loop. Checks _running flag between messages."""
@@ -1261,10 +1275,26 @@ class FLClient:
             logger.warning("Could not start dashboard: %s", e)
 
     async def _cleanup(self) -> None:
+        """Clean up resources. Handles partially initialized components gracefully."""
+        # Disconnect WebSocket if it was created
         if self._connection:
-            await self._connection.disconnect()
+            try:
+                await self._connection.disconnect()
+            except Exception as e:
+                logger.debug("Connection disconnect error (ignored): %s", e)
+        
+        # Close state manager if it was created
         if self._state_manager:
-            self._state_manager.close()
+            try:
+                self._state_manager.close()
+            except Exception as e:
+                logger.debug("State manager close error (ignored): %s", e)
+        
+        # Stop dashboard if it was started
         if self._dashboard:
-            self._dashboard.stop()
+            try:
+                self._dashboard.stop()
+            except Exception as e:
+                logger.debug("Dashboard stop error (ignored): %s", e)
+        
         logger.info("Client shutdown complete")
