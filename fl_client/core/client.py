@@ -818,16 +818,6 @@ class FLClient:
         if self._state_manager:
             self._state_manager.update_round(round_number)
 
-        # Bootstrap first round: treat room_init with weights as training trigger
-        # This breaks the chicken-and-egg problem where server waits for updates
-        # but clients wait for global_model broadcast
-        if weights_3d and self._model is not None and self._trainer is not None:
-            logger.info("Bootstrapping initial training round...")
-            await self._handle_global_model({
-                "round": round_number,
-                "weights": weights_3d,
-            })
-
     async def _handle_global_model(self, message: Dict[str, Any]) -> None:
         """Handle global_model — load weights, train, validate, send update."""
         assert self._state_manager is not None
